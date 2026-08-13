@@ -1,0 +1,12 @@
+<script setup>
+import { onMounted, ref } from 'vue'
+import { request } from '../api'
+import { useToast } from '../composables/useToast'
+
+const toast=useToast(), loading=ref(false), items=ref([]), resolving=ref(null)
+async function reload(){loading.value=true;try{const data=await request('/duplicate-candidates');items.value=(data.items||[]).map(item=>({...item,scoreText:Math.round(Number(item.final_score)*100),supplement:!!item.reason_json?.supplement,reasonText:item.reason_json?.supplement?'核心条件一致，新内容属于补充信息，建议合并':item.reason_json?.identity_conflict?'主体信息存在冲突，请人工确认':'语义高度相似，请确认是否为同一条信息'}))}catch(error){toast.show(error.message)}finally{loading.value=false}}
+async function resolve(id,action){resolving.value=id;try{await request(`/duplicate-candidates/${id}/${action}`,{method:'POST'});toast.show(action==='merge'?'已合并':'已保留两条');await reload()}catch(error){toast.show(error.message)}finally{resolving.value=null}}
+onMounted(reload)
+</script>
+<template><div class="page no-tabs"><header class="page-head"><button @click="$router.back()">‹</button><h1>疑似重复</h1><span></span></header><div v-if="loading" class="loading"><t-loading theme="circular" /> 加载中…</div><article v-for="item in items" :key="item.id" class="panel candidate"><div class="score">{{item.scoreText}}% 相似</div><h2>{{item.source_title}}</h2><div class="versus">可能与以下信息相同</div><h2 class="candidate-title">{{item.candidate_title}}</h2><p class="hint" :class="{supplement:item.supplement}">{{item.reasonText}}</p><p class="hint">{{item.same_user?'由同一账号上传':'由不同账号上传，请谨慎确认'}}</p><div class="actions"><button class="ghost-btn" :disabled="resolving===item.id" @click="resolve(item.id,'reject')">保留两条</button><button class="primary-btn" :disabled="resolving===item.id" @click="resolve(item.id,'merge')">确认合并</button></div></article><div v-if="!loading&&!items.length" class="empty">暂无待确认的重复信息</div></div></template>
+<style scoped>.page-head{display:grid;grid-template-columns:40px 1fr 40px;align-items:center;margin-bottom:18px}.page-head button{border:0;background:none;color:#334155;font-size:32px}.page-head h1{margin:0;text-align:center;font-size:21px}.score{color:#d97706;font-size:14px;font-weight:600}.candidate h2{margin:10px 0 0;color:#172033;font-size:18px}.candidate .candidate-title{color:#0052d9}.versus{margin-top:15px;color:#94a3b8;font-size:13px}.hint{margin:12px 0 0;color:#64748b;font-size:14px}.hint.supplement{padding:11px;border-radius:9px;background:#ecfdf5;color:#087f5b}.actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}</style>
