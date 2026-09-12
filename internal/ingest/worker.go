@@ -23,13 +23,20 @@ func NewWorker(store *database.Store, client *ai.Client, interval time.Duration,
 }
 
 func (w *Worker) Run(ctx context.Context) {
+	if recovered, err := w.store.RecoverStaleBatches(ctx, 10*time.Minute); err != nil {
+		slog.Error("recover stale ingestion batches", "error", err)
+	} else if recovered > 0 {
+		slog.Warn("stale ingestion batches queued for retry", "count", recovered)
+	}
 	if w.embeddingEnabled {
 		if err := w.store.QueueMissingEmbeddings(ctx); err != nil {
 			slog.Error("queue missing embeddings", "error", err)
 		}
 	}
-	ticker := time.NewTicker(w.interval)
-	defer ticker.Stop()
+	workTicker := time.NewTicker(w.interval)
+	recoveryTicker := time.NewTicker(time.Minute)
+	defer workTicker.Stop()
+	defer recoveryTicker.Stop()
 	for {
 		if err := w.processOne(ctx); err != nil && !errors.Is(err, pgx.ErrNoRows) && !errors.Is(err, context.Canceled) {
 			slog.Error("process ingestion batch", "error", err)
@@ -42,7 +49,13 @@ func (w *Worker) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-recoveryTicker.C:
+			if recovered, err := w.store.RecoverStaleBatches(ctx, 10*time.Minute); err != nil {
+				slog.Error("recover stale ingestion batches", "error", err)
+			} else if recovered > 0 {
+				slog.Warn("stale ingestion batches queued for retry", "count", recovered)
+			}
+		case <-workTicker.C:
 		}
 	}
 }
@@ -83,12 +96,12 @@ func (w *Worker) processOne(ctx context.Context) error {
 
 	response, modelName, err := w.ai.Structure(ctx, batch.RawText)
 	if err != nil {
-		_ = w.store.FailBatch(context.Background(), batch.ID, err.Error())
+		_ = w.store.FailBatch(context.Background(), batch.ID, "ai_processing_failed", "AI处理服务暂时不可用，请稍后重新处理")
 		slog.Error("ingestion batch failed", "batch_id", batch.ID, "duration", time.Since(started), "error", err)
 		return err
 	}
 	if err := w.store.SaveStructuredBatch(ctx, batch.ID, response, modelName); err != nil {
-		_ = w.store.FailBatch(context.Background(), batch.ID, err.Error())
+		_ = w.store.FailBatch(context.Background(), batch.ID, "data_save_failed", "数据保存失败，请稍后重新处理")
 		slog.Error("ingestion batch save failed", "batch_id", batch.ID, "duration", time.Since(started), "error", err)
 		return err
 	}

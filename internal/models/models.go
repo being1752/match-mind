@@ -16,10 +16,27 @@ type Batch struct {
 	SellCount      int             `json:"sell_count"`
 	UnknownCount   int             `json:"unknown_count"`
 	DuplicateCount int             `json:"duplicate_count"`
+	ErrorCode      string          `json:"error_code,omitempty"`
 	ErrorMessage   string          `json:"error_message,omitempty"`
 	CreatedAt      time.Time       `json:"created_at"`
 	CompletedAt    *time.Time      `json:"completed_at,omitempty"`
 	Items          []IngestionItem `json:"items,omitempty"`
+}
+
+type BatchSummary struct {
+	ID             int64      `json:"id"`
+	RawTextPreview string     `json:"raw_text_preview"`
+	SourceName     string     `json:"source_name"`
+	Status         string     `json:"status"`
+	TotalItems     int        `json:"total_items"`
+	BuyCount       int        `json:"buy_count"`
+	SellCount      int        `json:"sell_count"`
+	UnknownCount   int        `json:"unknown_count"`
+	DuplicateCount int        `json:"duplicate_count"`
+	ErrorCode      string     `json:"error_code,omitempty"`
+	ErrorMessage   string     `json:"error_message,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	CompletedAt    *time.Time `json:"completed_at,omitempty"`
 }
 
 type IngestionItem struct {

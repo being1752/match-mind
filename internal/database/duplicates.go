@@ -10,17 +10,21 @@ import (
 )
 
 type DuplicateCandidate struct {
-	ID                int64           `json:"id"`
-	SourceEntityType  string          `json:"source_entity_type"`
-	SourceEntityID    int64           `json:"source_entity_id"`
-	CandidateEntityID int64           `json:"candidate_entity_id"`
-	SourceTitle       string          `json:"source_title"`
-	CandidateTitle    string          `json:"candidate_title"`
-	VectorScore       float64         `json:"vector_score"`
-	FinalScore        float64         `json:"final_score"`
-	SameUser          bool            `json:"same_user"`
-	Status            string          `json:"status"`
-	ReasonJSON        json.RawMessage `json:"reason_json"`
+	ID                int64             `json:"id"`
+	SourceEntityType  string            `json:"source_entity_type"`
+	SourceEntityID    int64             `json:"source_entity_id"`
+	CandidateEntityID int64             `json:"candidate_entity_id"`
+	SourceTitle       string            `json:"source_title"`
+	CandidateTitle    string            `json:"candidate_title"`
+	SourceEntity      json.RawMessage   `json:"source_entity"`
+	CandidateEntity   json.RawMessage   `json:"candidate_entity"`
+	SourceSources     []json.RawMessage `json:"source_sources"`
+	CandidateSources  []json.RawMessage `json:"candidate_sources"`
+	VectorScore       float64           `json:"vector_score"`
+	FinalScore        float64           `json:"final_score"`
+	SameUser          bool              `json:"same_user"`
+	Status            string            `json:"status"`
+	ReasonJSON        json.RawMessage   `json:"reason_json"`
 }
 
 func (s *Store) EvaluateDuplicate(ctx context.Context, entityType string, entityID int64, model string) error {
@@ -30,25 +34,18 @@ func (s *Store) EvaluateDuplicate(ctx context.Context, entityType string, entity
 	}
 	query := fmt.Sprintf(`
 		WITH source AS (
-			SELECT embedding FROM entity_embeddings
-			WHERE entity_type=$1 AND entity_id=$2 AND embedding_type='matching_v1' AND model_name=$3
-		), source_user AS (
-			SELECT b.created_by
-			FROM entity_sources es JOIN ingestion_items i ON i.id=es.item_id
-			JOIN ingestion_batches b ON b.id=i.batch_id
-			WHERE es.entity_type=$1 AND es.entity_id=$2 AND b.created_by IS NOT NULL
-			ORDER BY b.created_at LIMIT 1
+			SELECT e.embedding,t.owner_user_id
+			FROM entity_embeddings e JOIN %s t ON t.id=e.entity_id
+			WHERE e.entity_type=$1 AND e.entity_id=$2 AND e.embedding_type='matching_v1'
+				AND e.model_name=$3 AND t.status='active' AND t.owner_user_id IS NOT NULL
 		)
 		SELECT e.entity_id,1-(e.embedding <=> source.embedding) AS score,
-			COALESCE((SELECT created_by FROM source_user),0),
-			COALESCE((SELECT b.created_by FROM entity_sources es
-				JOIN ingestion_items i ON i.id=es.item_id JOIN ingestion_batches b ON b.id=i.batch_id
-				WHERE es.entity_type=$1 AND es.entity_id=e.entity_id AND b.created_by IS NOT NULL
-				ORDER BY b.created_at LIMIT 1),0)
+			source.owner_user_id,t.owner_user_id
 		FROM entity_embeddings e CROSS JOIN source JOIN %s t ON t.id=e.entity_id
 		WHERE e.entity_type=$1 AND e.entity_id<>$2 AND e.embedding_type='matching_v1'
 			AND e.model_name=$3 AND e.status='completed' AND t.status='active'
-		ORDER BY e.embedding <=> source.embedding LIMIT 1`, table)
+			AND t.owner_user_id=source.owner_user_id
+		ORDER BY e.embedding <=> source.embedding LIMIT 1`, table, table)
 	var candidateID, sourceUser, candidateUser int64
 	var vectorScore float64
 	err = s.pool.QueryRow(ctx, query, entityType, entityID, model).
@@ -232,7 +229,7 @@ func normalizeIdentity(value string) string {
 	return strings.ToLower(strings.Join(strings.Fields(value), ""))
 }
 
-func (s *Store) ListDuplicateCandidates(ctx context.Context) ([]DuplicateCandidate, error) {
+func (s *Store) ListDuplicateCandidates(ctx context.Context, userID int64) ([]DuplicateCandidate, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT d.id,d.source_entity_type,d.source_entity_id,d.candidate_entity_id,
 			CASE WHEN d.source_entity_type='buy_demand' THEN sb.title ELSE ss.title END,
@@ -244,7 +241,8 @@ func (s *Store) ListDuplicateCandidates(ctx context.Context) ([]DuplicateCandida
 		LEFT JOIN buy_demands cb ON d.source_entity_type='buy_demand' AND cb.id=d.candidate_entity_id
 		LEFT JOIN sell_projects ss ON d.source_entity_type='sell_project' AND ss.id=d.source_entity_id
 		LEFT JOIN sell_projects cs ON d.source_entity_type='sell_project' AND cs.id=d.candidate_entity_id
-		WHERE d.status='pending' ORDER BY d.final_score DESC,d.created_at DESC`)
+		WHERE d.status='pending' AND d.source_user_id=$1 AND d.candidate_user_id=$1
+		ORDER BY d.final_score DESC,d.created_at DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -259,13 +257,56 @@ func (s *Store) ListDuplicateCandidates(ctx context.Context) ([]DuplicateCandida
 		}
 		result = append(result, item)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for index := range result {
+		item := &result[index]
+		item.SourceEntity, item.SourceSources, err = s.duplicateEntityDetail(
+			ctx, item.SourceEntityType, item.SourceEntityID, userID,
+		)
+		if err != nil {
+			return nil, err
+		}
+		item.CandidateEntity, item.CandidateSources, err = s.duplicateEntityDetail(
+			ctx, item.SourceEntityType, item.CandidateEntityID, userID,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+func (s *Store) duplicateEntityDetail(
+	ctx context.Context,
+	entityType string,
+	entityID, userID int64,
+) (json.RawMessage, []json.RawMessage, error) {
+	table, err := entityTable(entityType)
+	if err != nil {
+		return nil, nil, err
+	}
+	var entity json.RawMessage
+	query := fmt.Sprintf(`
+		SELECT to_jsonb(t)-'canonical_hash'-'owner_user_id'
+		FROM %s t
+		WHERE t.id=$1 AND t.owner_user_id=$2`, table)
+	if err := s.pool.QueryRow(ctx, query, entityID, userID).Scan(&entity); err != nil {
+		return nil, nil, err
+	}
+	sources, err := s.entitySources(ctx, entityType, entityID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return entity, sources, nil
 }
 
 func (s *Store) RejectDuplicate(ctx context.Context, id, userID int64) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE duplicate_candidates SET status='rejected',resolved_by=$2,resolved_at=NOW()
-		WHERE id=$1 AND status='pending'`, id, userID)
+		WHERE id=$1 AND status='pending' AND source_user_id=$2 AND candidate_user_id=$2`, id, userID)
 	if err == nil && tag.RowsAffected() == 0 {
 		return pgx.ErrNoRows
 	}
@@ -286,13 +327,18 @@ func (s *Store) MergeEntities(ctx context.Context, candidateID, operatorID int64
 	err = tx.QueryRow(ctx, `
 		SELECT source_entity_type,source_entity_id,candidate_entity_id,final_score,
 			COALESCE(source_user_id=candidate_user_id,false),reason_json
-		FROM duplicate_candidates WHERE id=$1 AND status='pending' FOR UPDATE`, candidateID).
+		FROM duplicate_candidates
+		WHERE id=$1 AND status='pending' AND source_user_id=$2 AND candidate_user_id=$2
+		FOR UPDATE`, candidateID, operatorID).
 		Scan(&entityType, &sourceID, &targetID, &score, &sameUser, &candidateReasonJSON)
 	if err != nil {
 		return err
 	}
 	if sourceID == targetID {
 		return fmt.Errorf("cannot merge entity into itself")
+	}
+	if !sameUser {
+		return pgx.ErrNoRows
 	}
 	table, _ := entityTable(entityType)
 	var targetBefore, sourceBefore []byte
@@ -484,6 +530,14 @@ func (s *Store) RevertMerge(ctx context.Context, eventID, operatorID int64) erro
 	if err != nil {
 		return err
 	}
+	table, _ := entityTable(entityType)
+	var ownerUserID int64
+	if err := tx.QueryRow(ctx, fmt.Sprintf("SELECT COALESCE(owner_user_id,0) FROM %s WHERE id=$1", table), targetID).Scan(&ownerUserID); err != nil {
+		return err
+	}
+	if ownerUserID == 0 || ownerUserID != operatorID {
+		return pgx.ErrNoRows
+	}
 	var reason struct {
 		CandidateID   int64           `json:"candidate_id"`
 		SourceItemIDs []int64         `json:"source_item_ids"`
@@ -498,7 +552,6 @@ func (s *Store) RevertMerge(ctx context.Context, eventID, operatorID int64) erro
 	if err := restoreEntitySnapshot(ctx, tx, entityType, targetID, reason.TargetBefore); err != nil {
 		return err
 	}
-	table, _ := entityTable(entityType)
 	if _, err = tx.Exec(ctx, fmt.Sprintf(
 		`UPDATE %s SET status='active',merged_into_id=NULL,updated_at=NOW() WHERE id=$1`, table),
 		sourceID); err != nil {

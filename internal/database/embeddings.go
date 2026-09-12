@@ -32,7 +32,7 @@ func (s *Store) QueueMissingEmbeddings(ctx context.Context) error {
 		ON CONFLICT(entity_type,entity_id,embedding_type)
 		DO UPDATE SET status='pending',retry_count=0,error_message=NULL,
 			available_at=NOW(),updated_at=NOW()
-		WHERE embedding_jobs.status='failed';
+		WHERE embedding_jobs.status IN ('failed','model_switch_pending');
 		INSERT INTO embedding_jobs(entity_type,entity_id)
 		SELECT 'sell_project',id FROM sell_projects s
 		WHERE status='active' AND NOT EXISTS (
@@ -42,7 +42,7 @@ func (s *Store) QueueMissingEmbeddings(ctx context.Context) error {
 		ON CONFLICT(entity_type,entity_id,embedding_type)
 		DO UPDATE SET status='pending',retry_count=0,error_message=NULL,
 			available_at=NOW(),updated_at=NOW()
-		WHERE embedding_jobs.status='failed'`)
+		WHERE embedding_jobs.status IN ('failed','model_switch_pending')`)
 	return err
 }
 

@@ -206,9 +206,10 @@ async def embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
 
     api_base = os.getenv("EMBEDDING_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
     dimensions = int(os.getenv("EMBEDDING_DIMENSIONS", "1024"))
+    send_dimensions = os.getenv("EMBEDDING_SEND_DIMENSIONS", "false").strip().lower() == "true"
     timeout = float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "60"))
-    payload: dict[str, Any] = {"model": model, "input": request.texts}
-    if dimensions:
+    payload: dict[str, Any] = {"model": model, "input": request.texts, "encoding_format": "float"}
+    if send_dimensions and dimensions:
         payload["dimensions"] = dimensions
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:

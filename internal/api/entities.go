@@ -29,7 +29,7 @@ func (h *Handler) getEntity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, 500, "database_error", err.Error())
+		h.internalError(w, r, "database", err)
 		return
 	}
 	writeJSON(w, 200, result)
@@ -43,16 +43,16 @@ func (h *Handler) getMatches(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := h.store.ListMatches(r.Context(), entityType, id)
 	if err != nil {
-		writeError(w, 500, "database_error", err.Error())
+		h.internalError(w, r, "database", err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
 
 func (h *Handler) listDuplicateCandidates(w http.ResponseWriter, r *http.Request) {
-	items, err := h.store.ListDuplicateCandidates(r.Context())
+	items, err := h.store.ListDuplicateCandidates(r.Context(), userID(r))
 	if err != nil {
-		writeError(w, 500, "database_error", err.Error())
+		h.internalError(w, r, "database", err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
@@ -65,7 +65,7 @@ func (h *Handler) mergeDuplicate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.MergeEntities(r.Context(), id, userID(r)); err != nil {
-		writeError(w, 500, "merge_failed", err.Error())
+		h.internalError(w, r, "database", err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"status": "merged"})
@@ -78,7 +78,7 @@ func (h *Handler) rejectDuplicate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.RejectDuplicate(r.Context(), id, userID(r)); err != nil {
-		writeError(w, 500, "reject_failed", err.Error())
+		h.internalError(w, r, "database", err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"status": "rejected"})
@@ -86,7 +86,7 @@ func (h *Handler) rejectDuplicate(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) backfillEmbeddings(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.QueueMissingEmbeddings(r.Context()); err != nil {
-		writeError(w, 500, "queue_failed", err.Error())
+		h.internalError(w, r, "database", err)
 		return
 	}
 	writeJSON(w, 202, map[string]any{"status": "queued"})
@@ -95,7 +95,7 @@ func (h *Handler) backfillEmbeddings(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) rebuildMatches(w http.ResponseWriter, r *http.Request) {
 	count, err := h.store.RebuildAllMatches(r.Context())
 	if err != nil {
-		writeError(w, 500, "rebuild_failed", err.Error())
+		h.internalError(w, r, "database", err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"status": "completed", "sources_processed": count})
@@ -112,7 +112,7 @@ func (h *Handler) revertMerge(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 404, "not_found", "可撤销的合并事件不存在")
 			return
 		}
-		writeError(w, 500, "revert_failed", err.Error())
+		h.internalError(w, r, "database", err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"status": "reverted"})

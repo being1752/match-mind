@@ -60,10 +60,10 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, 500, "database_error", err.Error())
+		h.internalError(w, r, "database", err)
 		return
 	}
-	h.writeSession(w, user)
+	h.writeSession(w, r, user)
 }
 
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
@@ -81,16 +81,16 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, 500, "database_error", err.Error())
+		h.internalError(w, r, "database", err)
 		return
 	}
-	h.writeSession(w, user)
+	h.writeSession(w, r, user)
 }
 
-func (h *Handler) writeSession(w http.ResponseWriter, user database.User) {
+func (h *Handler) writeSession(w http.ResponseWriter, r *http.Request, user database.User) {
 	token, err := h.tokens.Issue(user.ID, user.Username)
 	if err != nil {
-		writeError(w, 500, "token_error", err.Error())
+		h.internalError(w, r, "token", err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"token": token, "user": user})
@@ -98,8 +98,12 @@ func (h *Handler) writeSession(w http.ResponseWriter, user database.User) {
 
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	user, err := h.store.GetUser(r.Context(), userID(r))
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, 404, "not_found", "用户不存在")
+		return
+	}
+	if err != nil {
+		h.internalError(w, r, "database", err)
 		return
 	}
 	writeJSON(w, 200, user)

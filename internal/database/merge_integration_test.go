@@ -44,7 +44,7 @@ func TestMergeEntitiesIntegration(t *testing.T) {
 
 	createEntity := func(title, raw, hash, industry string) int64 {
 		t.Helper()
-		batchID, err := store.CreateBatch(ctx, raw, "merge-integration", "", user.ID)
+		batchID, _, err := store.CreateBatch(ctx, raw, "merge-integration", "", "", user.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -59,9 +59,9 @@ func TestMergeEntitiesIntegration(t *testing.T) {
 		itemIDs = append(itemIDs, itemID)
 		var entityID int64
 		err = pool.QueryRow(ctx, `
-			INSERT INTO buy_demands(title,industries,canonical_hash,first_item_id)
-			VALUES($1,jsonb_build_array($2::text),$3,$4) RETURNING id`,
-			title, industry, hash, itemID).Scan(&entityID)
+			INSERT INTO buy_demands(title,industries,canonical_hash,first_item_id,owner_user_id)
+			VALUES($1,jsonb_build_array($2::text),$3,$4,$5) RETURNING id`,
+			title, industry, hash, itemID, user.ID).Scan(&entityID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -146,12 +146,20 @@ func TestVectorMatchingIntegration(t *testing.T) {
 	defer pool.Close()
 	store := NewStore(pool)
 	stamp := time.Now().UnixNano()
+	buyUser, err := store.CreateUser(ctx, fmt.Sprintf("match_buy_%d", stamp), "Integration-9381", "跨账号买方")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sellUser, err := store.CreateUser(ctx, fmt.Sprintf("match_sell_%d", stamp), "Integration-9381", "跨账号卖方")
+	if err != nil {
+		t.Fatal(err)
+	}
 	hash1 := fmt.Sprintf("%064x", stamp)
 	hash2 := fmt.Sprintf("%064x", stamp+1)
 	var buyID, sellID int64
 	err = pool.QueryRow(ctx, `
-		INSERT INTO buy_demands(title,industries,transaction_types,canonical_hash)
-		VALUES('向量集成测试买方','["医疗"]','["acquisition"]',$1) RETURNING id`, hash1).Scan(&buyID)
+		INSERT INTO buy_demands(title,industries,transaction_types,canonical_hash,owner_user_id)
+		VALUES('向量集成测试买方','["医疗"]','["acquisition"]',$1,$2) RETURNING id`, hash1, buyUser.ID).Scan(&buyID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,10 +169,11 @@ func TestVectorMatchingIntegration(t *testing.T) {
 		_, _ = pool.Exec(ctx, `DELETE FROM embedding_jobs WHERE (entity_type='buy_demand' AND entity_id=$1) OR (entity_type='sell_project' AND entity_id=$2)`, buyID, sellID)
 		_, _ = pool.Exec(ctx, `DELETE FROM buy_demands WHERE id=$1`, buyID)
 		_, _ = pool.Exec(ctx, `DELETE FROM sell_projects WHERE id=$1`, sellID)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE id IN ($1,$2)`, buyUser.ID, sellUser.ID)
 	}()
 	err = pool.QueryRow(ctx, `
-		INSERT INTO sell_projects(title,industries,transaction_types,canonical_hash)
-		VALUES('向量集成测试卖方','["医疗"]','["acquisition"]',$1) RETURNING id`, hash2).Scan(&sellID)
+		INSERT INTO sell_projects(title,industries,transaction_types,canonical_hash,owner_user_id)
+		VALUES('向量集成测试卖方','["医疗"]','["acquisition"]',$1,$2) RETURNING id`, hash2, sellUser.ID).Scan(&sellID)
 	if err != nil {
 		t.Fatal(err)
 	}

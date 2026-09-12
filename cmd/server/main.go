@@ -41,6 +41,10 @@ func main() {
 	}
 
 	store := database.NewStore(pool)
+	if err := store.EnsureTestUser(ctx, cfg.TestUsername, cfg.TestPassword, cfg.TestDisplayName); err != nil {
+		slog.Error("ensure test account", "error", err)
+		os.Exit(1)
+	}
 	aiClient := ai.NewClient(cfg.AIServiceURL, cfg.AIRequestTimeout)
 	worker := ingest.NewWorker(store, aiClient, cfg.WorkerPollInterval, cfg.EmbeddingEnabled)
 	go worker.Run(ctx)

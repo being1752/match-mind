@@ -11,6 +11,15 @@ const username = ref('')
 const password = ref('')
 const displayName = ref('')
 const loading = ref(false)
+const testUsername = import.meta.env.VITE_TEST_ACCOUNT_USERNAME || ''
+const testPassword = import.meta.env.VITE_TEST_ACCOUNT_PASSWORD || ''
+
+function fillTestAccount() {
+  mode.value = 'login'
+  username.value = testUsername
+  password.value = testPassword
+  toast.show('已填入测试账号')
+}
 
 async function submit() {
   if (username.value.trim().length < 3 || password.value.length < 8) return toast.show('用户名至少3位，密码至少8位')
@@ -29,12 +38,13 @@ async function submit() {
 <template>
   <div class="login-page">
     <div class="brand">MatchMind</div>
-    <div class="subtitle">集团内部项目与需求匹配</div>
+    <div class="subtitle"></div>
     <section class="panel auth-panel">
       <div class="mode-row"><button :class="{active:mode==='login'}" @click="mode='login'">登录</button><button :class="{active:mode==='register'}" @click="mode='register'">注册</button></div>
       <label v-if="mode==='register'" class="field"><span>姓名</span><input v-model="displayName" placeholder="用于标记信息来源" /></label>
       <label class="field"><span>用户名</span><input v-model="username" autocomplete="username" placeholder="至少3个字符" /></label>
       <label class="field"><span>密码</span><input v-model="password" type="password" autocomplete="current-password" placeholder="至少8个字符" @keyup.enter="submit" /></label>
+      <button v-if="testUsername && testPassword" class="test-account" type="button" @click="fillTestAccount">一键填入测试账号</button>
       <button class="primary-btn submit" :disabled="loading" @click="submit">{{ loading ? '请稍候…' : mode==='login' ? '登录' : '创建账号' }}</button>
     </section>
   </div>
@@ -53,4 +63,5 @@ async function submit() {
 .field input { width:100%; height:48px; padding:0 14px; border:1px solid #dce3ed; border-radius:9px; outline:none; }
 .field input:focus { border-color:#0052d9; box-shadow:0 0 0 3px rgba(0,82,217,.08); }
 .submit { width:100%; }
+.test-account { width:100%; margin:-4px 0 14px; padding:9px; border:1px dashed #8eb5f5; border-radius:9px; background:#f4f8ff; color:#0052d9; }
 </style>

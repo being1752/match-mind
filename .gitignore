@@ -21,3 +21,9 @@ __pycache__/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Local source material and temporary migration artifacts are intentionally
+# kept outside Git because they may contain internal business data.
+material/
+_frontend_stage/
+_patches/

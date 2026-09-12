@@ -19,15 +19,20 @@ type Store struct{ pool *pgxpool.Pool }
 
 func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
-func (s *Store) CreateBatch(ctx context.Context, rawText, sourceName, sourceFile string, createdBy int64) (int64, error) {
+func (s *Store) CreateBatch(ctx context.Context, rawText, sourceName, sourceFile, clientRequestID string, createdBy int64) (int64, string, error) {
 	if strings.TrimSpace(sourceName) == "" {
 		sourceName = "人工录入"
 	}
+	clientRequestID = strings.TrimSpace(clientRequestID)
 	var id int64
+	var status string
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO ingestion_batches(raw_text, source_name, source_file, created_by)
-		VALUES($1,$2,NULLIF($3,''),$4) RETURNING id`, rawText, sourceName, sourceFile, createdBy).Scan(&id)
-	return id, err
+		INSERT INTO ingestion_batches(raw_text, source_name, source_file, client_request_id, created_by)
+		VALUES($1,$2,NULLIF($3,''),NULLIF($4,''),$5)
+		ON CONFLICT(created_by,client_request_id)
+		DO UPDATE SET client_request_id=EXCLUDED.client_request_id
+		RETURNING id,status`, rawText, sourceName, sourceFile, clientRequestID, createdBy).Scan(&id, &status)
+	return id, status, err
 }
 
 func (s *Store) ClaimBatch(ctx context.Context) (*models.Batch, error) {
@@ -46,7 +51,7 @@ func (s *Store) ClaimBatch(ctx context.Context) (*models.Batch, error) {
 	if err := row.Scan(&batch.ID, &batch.RawText, &batch.SourceName, &batch.SourceFile, &batch.CreatedAt); err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE ingestion_batches SET status='processing', started_at=NOW(), error_message=NULL WHERE id=$1`, batch.ID); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE ingestion_batches SET status='processing', started_at=NOW(), error_code=NULL, error_message=NULL WHERE id=$1`, batch.ID); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -62,6 +67,11 @@ func (s *Store) SaveStructuredBatch(ctx context.Context, batchID int64, response
 		return err
 	}
 	defer tx.Rollback(ctx)
+
+	var ownerUserID int64
+	if err := tx.QueryRow(ctx, "SELECT COALESCE(created_by,0) FROM ingestion_batches WHERE id=$1", batchID).Scan(&ownerUserID); err != nil {
+		return err
+	}
 
 	if _, err := tx.Exec(ctx, `DELETE FROM ingestion_items WHERE batch_id=$1`, batchID); err != nil {
 		return err
@@ -105,10 +115,10 @@ func (s *Store) SaveStructuredBatch(ctx context.Context, batchID int64, response
 		switch item.DetectedType {
 		case "buy_demand":
 			buyCount++
-			entityID, duplicate, err = upsertBuyDemand(ctx, tx, itemID, item)
+			entityID, duplicate, err = upsertBuyDemand(ctx, tx, itemID, ownerUserID, item)
 		case "sell_project":
 			sellCount++
-			entityID, duplicate, err = upsertSellProject(ctx, tx, itemID, item)
+			entityID, duplicate, err = upsertSellProject(ctx, tx, itemID, ownerUserID, item)
 		default:
 			unknownCount++
 		}
@@ -200,14 +210,14 @@ func isAggregateItem(item models.StructuredItem) bool {
 	return false
 }
 
-func upsertBuyDemand(ctx context.Context, tx pgx.Tx, itemID int64, item models.StructuredItem) (int64, bool, error) {
+func upsertBuyDemand(ctx context.Context, tx pgx.Tx, itemID, ownerUserID int64, item models.StructuredItem) (int64, bool, error) {
 	data := map[string]any{}
 	if err := json.Unmarshal(item.StructuredData, &data); err != nil {
 		return 0, false, err
 	}
 	hash := canonicalHash(item.RawText)
 	var existing int64
-	err := tx.QueryRow(ctx, `SELECT id FROM buy_demands WHERE canonical_hash=$1`, hash).Scan(&existing)
+	err := tx.QueryRow(ctx, `SELECT id FROM buy_demands WHERE owner_user_id=$1 AND canonical_hash=$2 AND status='active'`, ownerUserID, hash).Scan(&existing)
 	if err == nil {
 		_, err = tx.Exec(ctx, `UPDATE buy_demands SET updated_at=NOW() WHERE id=$1`, existing)
 		return existing, true, err
@@ -221,26 +231,26 @@ func upsertBuyDemand(ctx context.Context, tx pgx.Tx, itemID int64, item models.S
 		preferred_regions,preferred_stages,investment_amount_min,investment_amount_max,target_revenue_min,
 		target_revenue_max,target_net_profit_min,target_net_profit_max,target_valuation_min,target_valuation_max,
 		pe_min,pe_max,listed_status_requirement,control_ratio_min,profitability_required,extra_constraints,
-		canonical_hash,first_item_id)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+		canonical_hash,first_item_id,owner_user_id)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,NULLIF($26,0))
 		RETURNING id`,
 		fallback(item.Title, stringValue(data, "title"), "未命名买方需求"), nullableString(data, "buyer_name"), nullableString(data, "buyer_type"), nullableString(data, "summary"),
 		jsonValue(data, "industries", []any{}), jsonValue(data, "transaction_types", []any{}), jsonValue(data, "target_types", []any{}),
 		jsonValue(data, "preferred_regions", []any{}), jsonValue(data, "preferred_stages", []any{}), numberValue(data, "investment_amount_min"), numberValue(data, "investment_amount_max"),
 		numberValue(data, "target_revenue_min"), numberValue(data, "target_revenue_max"), numberValue(data, "target_net_profit_min"), numberValue(data, "target_net_profit_max"),
 		numberValue(data, "target_valuation_min"), numberValue(data, "target_valuation_max"), numberValue(data, "pe_min"), numberValue(data, "pe_max"),
-		nullableString(data, "listed_status_requirement"), numberValue(data, "control_ratio_min"), boolValue(data, "profitability_required"), jsonValue(data, "extra_constraints", map[string]any{}), hash, itemID).Scan(&id)
+		nullableString(data, "listed_status_requirement"), numberValue(data, "control_ratio_min"), boolValue(data, "profitability_required"), jsonValue(data, "extra_constraints", map[string]any{}), hash, itemID, ownerUserID).Scan(&id)
 	return id, false, err
 }
 
-func upsertSellProject(ctx context.Context, tx pgx.Tx, itemID int64, item models.StructuredItem) (int64, bool, error) {
+func upsertSellProject(ctx context.Context, tx pgx.Tx, itemID, ownerUserID int64, item models.StructuredItem) (int64, bool, error) {
 	data := map[string]any{}
 	if err := json.Unmarshal(item.StructuredData, &data); err != nil {
 		return 0, false, err
 	}
 	hash := canonicalHash(item.RawText)
 	var existing int64
-	err := tx.QueryRow(ctx, `SELECT id FROM sell_projects WHERE canonical_hash=$1`, hash).Scan(&existing)
+	err := tx.QueryRow(ctx, `SELECT id FROM sell_projects WHERE owner_user_id=$1 AND canonical_hash=$2 AND status='active'`, ownerUserID, hash).Scan(&existing)
 	if err == nil {
 		_, err = tx.Exec(ctx, `UPDATE sell_projects SET updated_at=NOW() WHERE id=$1`, existing)
 		return existing, true, err
@@ -253,32 +263,35 @@ func upsertSellProject(ctx context.Context, tx pgx.Tx, itemID int64, item models
 		INSERT INTO sell_projects(title,company_name,summary,industries,transaction_types,project_types,financing_round,
 		financing_amount_min,financing_amount_max,revenue_min,revenue_max,net_profit_min,net_profit_max,valuation_min,
 		valuation_max,pe_min,pe_max,province,city,listed_status,transfer_ratio_min,transfer_ratio_max,extra_facts,
-		canonical_hash,first_item_id)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+		canonical_hash,first_item_id,owner_user_id)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,NULLIF($26,0))
 		RETURNING id`,
 		fallback(item.Title, stringValue(data, "title"), "未命名卖方项目"), nullableString(data, "company_name"), nullableString(data, "summary"),
 		jsonValue(data, "industries", []any{}), jsonValue(data, "transaction_types", []any{}), jsonValue(data, "project_types", []any{}), nullableString(data, "financing_round"),
 		numberValue(data, "financing_amount_min"), numberValue(data, "financing_amount_max"), numberValue(data, "revenue_min"), numberValue(data, "revenue_max"),
 		numberValue(data, "net_profit_min"), numberValue(data, "net_profit_max"), numberValue(data, "valuation_min"), numberValue(data, "valuation_max"),
 		numberValue(data, "pe_min"), numberValue(data, "pe_max"), nullableString(data, "province"), nullableString(data, "city"), nullableString(data, "listed_status"),
-		numberValue(data, "transfer_ratio_min"), numberValue(data, "transfer_ratio_max"), jsonValue(data, "extra_facts", map[string]any{}), hash, itemID).Scan(&id)
+		numberValue(data, "transfer_ratio_min"), numberValue(data, "transfer_ratio_max"), jsonValue(data, "extra_facts", map[string]any{}), hash, itemID, ownerUserID).Scan(&id)
 	return id, false, err
 }
 
-func (s *Store) FailBatch(ctx context.Context, batchID int64, message string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE ingestion_batches SET status='failed', error_message=$2, completed_at=NOW() WHERE id=$1`, batchID, message)
+func (s *Store) FailBatch(ctx context.Context, batchID int64, code, message string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE ingestion_batches SET status='failed', error_code=$2, error_message=$3, completed_at=NOW() WHERE id=$1`, batchID, code, message)
 	return err
 }
 
-func (s *Store) RetryBatch(ctx context.Context, batchID int64) error {
-	_, err := s.pool.Exec(ctx, `UPDATE ingestion_batches SET status='retry', error_message=NULL, completed_at=NULL WHERE id=$1`, batchID)
+func (s *Store) RetryBatch(ctx context.Context, batchID, userID int64) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE ingestion_batches SET status='retry', error_code=NULL, error_message=NULL, started_at=NULL, completed_at=NULL WHERE id=$1 AND created_by=$2 AND status='failed'`, batchID, userID)
+	if err == nil && tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
 	return err
 }
 
-func (s *Store) GetBatch(ctx context.Context, id int64) (*models.Batch, error) {
+func (s *Store) GetBatch(ctx context.Context, id, userID int64) (*models.Batch, error) {
 	b := &models.Batch{}
-	err := s.pool.QueryRow(ctx, `SELECT id,raw_text,source_name,COALESCE(source_file,''),status,total_items,buy_count,sell_count,unknown_count,duplicate_count,COALESCE(error_message,''),created_at,completed_at FROM ingestion_batches WHERE id=$1`, id).
-		Scan(&b.ID, &b.RawText, &b.SourceName, &b.SourceFile, &b.Status, &b.TotalItems, &b.BuyCount, &b.SellCount, &b.UnknownCount, &b.DuplicateCount, &b.ErrorMessage, &b.CreatedAt, &b.CompletedAt)
+	err := s.pool.QueryRow(ctx, `SELECT id,raw_text,source_name,COALESCE(source_file,''),status,total_items,buy_count,sell_count,unknown_count,duplicate_count,COALESCE(error_code,''),COALESCE(error_message,''),created_at,completed_at FROM ingestion_batches WHERE id=$1 AND created_by=$2`, id, userID).
+		Scan(&b.ID, &b.RawText, &b.SourceName, &b.SourceFile, &b.Status, &b.TotalItems, &b.BuyCount, &b.SellCount, &b.UnknownCount, &b.DuplicateCount, &b.ErrorCode, &b.ErrorMessage, &b.CreatedAt, &b.CompletedAt)
 	if err != nil {
 		return nil, err
 	}

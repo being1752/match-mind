@@ -18,6 +18,9 @@ type Config struct {
 	JWTSecret          string
 	JWTDuration        time.Duration
 	EmbeddingEnabled   bool
+	TestUsername       string
+	TestPassword       string
+	TestDisplayName    string
 }
 
 func Load() (Config, error) {
@@ -32,6 +35,9 @@ func Load() (Config, error) {
 		FrontendOrigin:   env("FRONTEND_ORIGIN", "*"),
 		JWTSecret:        env("JWT_SECRET", "match-mind-local-change-me"),
 		EmbeddingEnabled: env("EMBEDDING_ENABLED", "false") == "true",
+		TestUsername:     os.Getenv("TEST_ACCOUNT_USERNAME"),
+		TestPassword:     os.Getenv("TEST_ACCOUNT_PASSWORD"),
+		TestDisplayName:  env("TEST_ACCOUNT_DISPLAY_NAME", "测试账号"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")

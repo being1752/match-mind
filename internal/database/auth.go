@@ -44,6 +44,27 @@ func (s *Store) CreateUser(ctx context.Context, username, password, displayName 
 	return user, err
 }
 
+func (s *Store) EnsureTestUser(ctx context.Context, username, password, displayName string) error {
+	username = strings.TrimSpace(username)
+	if username == "" || password == "" {
+		return nil
+	}
+	if displayName = strings.TrimSpace(displayName); displayName == "" {
+		displayName = "测试账号"
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO users(username,password_hash,display_name,status)
+		VALUES($1,$2,$3,'active')
+		ON CONFLICT ((LOWER(username))) DO UPDATE SET
+			password_hash=EXCLUDED.password_hash,
+			display_name=EXCLUDED.display_name,
+			status='active'`, username, string(hash), displayName)
+	return err
+}
 func (s *Store) AuthenticateUser(ctx context.Context, username, password string) (User, error) {
 	var user User
 	var hash string

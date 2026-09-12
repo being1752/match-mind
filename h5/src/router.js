@@ -4,6 +4,7 @@ import IngestView from './views/IngestView.vue'
 import EntityListView from './views/EntityListView.vue'
 import EntityDetailView from './views/EntityDetailView.vue'
 import DuplicatesView from './views/DuplicatesView.vue'
+import IngestionHistoryView from './views/IngestionHistoryView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -15,6 +16,7 @@ const router = createRouter({
     { path: '/sell-projects', component: EntityListView, props: { entityType: 'sell_project' }, meta: { tab: 'sell', title: '项目需求' } },
     { path: '/entities/:type/:id', component: EntityDetailView, meta: { title: '需求详情' } },
     { path: '/duplicates', component: DuplicatesView, meta: { title: '疑似重复' } },
+    { path: '/ingestion-history', component: IngestionHistoryView, meta: { title: '录入记录' } },
   ],
 })
 

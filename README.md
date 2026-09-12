@@ -1,19 +1,18 @@
 # MatchMind 内部录入与匹配 MVP
-仓库结构：
-
-- `cmd/`、`internal/`：Go API、任务编排与数据库访问
-- `ai-service/`：Python AI 结构化与向量服务
-- `h5/`：Vue 3 + TDesign Mobile H5
-- `infra/postgres/`：PostgreSQL 18 + pgvector 开发环境
 
 当前版本包含：
 
 - 用户名、密码注册与登录，JWT 鉴权
+- 原文先落库、后台异步整理，关闭页面不影响处理
+- 按账号查看录入历史、原文、状态和整理结果
+- 草稿自动保存、处理中任务自动恢复和幂等提交
+- 超时卡死的处理中任务自动重新排队
 - 批量文字切分、买卖方向判断、结构化入库
 - 本地候选分段、AI原子分组、分组后批量结构化及覆盖率校验
 - 原始信息永久保留，并记录上传账号和时间
-- 完全重复自动关联，同用户高置信语义重复自动合并
-- 中等置信或跨用户重复候选人工确认
+- 同账号完全重复自动关联，同账号高置信语义重复自动合并
+- 同账号中等置信重复候选由当前账号人工确认
+- 不同账号的相同信息保留独立实体，投资需求与项目需求仍参与集团全局匹配
 - 合并事件、实体版本和来源时间线
 - Python Embedding 接口、PostgreSQL 向量任务和 pgvector 存储
 - 结构化规则分与向量相似度组合匹配
@@ -81,6 +80,7 @@ POST /api/v1/auth/login
 GET  /api/v1/auth/me
 
 POST /api/v1/ingestion-batches
+GET  /api/v1/ingestion-batches          # 当前账号录入历史
 GET  /api/v1/ingestion-batches/{id}
 
 GET  /api/v1/entities/{type}/{id}
